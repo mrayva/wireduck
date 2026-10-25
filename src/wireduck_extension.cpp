@@ -68,11 +68,12 @@ void FetchSelectedFields(ClientContext &context, const std::vector<std::string> 
     }
     sql << " END;";
     auto result = conn.Query(sql.str());
-    if (result->RowCount() > 0) {  //  Ensure result has rows
-        for (auto &row : *result) {
-            selected_fields.push_back(row.GetBaseValue(0).ToString());  // ✅ Convert `Value` to string
-            field_types.push_back(MapTsharkTypeToDuckDB(row.GetBaseValue(1).ToString()));
-        }
+    if (result->HasError()) {
+        throw std::runtime_error(result->GetError());
+    }
+    for (auto &row : *result) {
+        selected_fields.push_back(row.GetBaseValue(0).ToString());  // ✅ Convert `Value` to string
+        field_types.push_back(MapTsharkTypeToDuckDB(row.GetBaseValue(1).ToString()));
     }
 
 }
