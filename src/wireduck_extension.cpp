@@ -9,6 +9,7 @@
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 // OpenSSL linked through vcpkg
 #include <openssl/opensslv.h>
+#include <iostream>
 
 namespace duckdb {
 
@@ -68,16 +69,16 @@ void FetchSelectedFields(ClientContext &context, const std::vector<std::string> 
     sql << " END;";
     auto result = conn.Query(sql.str());
     if (result->RowCount() > 0) {  //  Ensure result has rows
-        for (idx_t row_idx = 0; row_idx < result->RowCount(); row_idx++) {
-            selected_fields.push_back(result->GetValue(0, row_idx).ToString());  // ✅ Convert `Value` to string
-            field_types.push_back(MapTsharkTypeToDuckDB(result->GetValue(1, row_idx).ToString()));
+        for (auto &row : *result) {
+            selected_fields.push_back(row.GetBaseValue(0).ToString());  // ✅ Convert `Value` to string
+            field_types.push_back(MapTsharkTypeToDuckDB(row.GetBaseValue(1).ToString()));
         }
     }
-    
+
 }
 
 static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFunctionBindInput &input,
-    vector<LogicalType> &return_types, vector<string> &names) {
+    vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<ReadPcapBindData>();
     // Extract the file path argument
     auto &fs = FileSystem::GetFileSystem(context);
@@ -93,7 +94,7 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
     std::vector<string> protocols;
     // Get named parameters with default fallback
         
-    if (input.named_parameters.count("protocols")) {
+    if (input.named_parameters.contains("protocols")) {
         // Extract the list of protocols argument
         const auto &list_val = input.named_parameters["protocols"];
         const auto &list = duckdb::ListValue::GetChildren(list_val);
@@ -108,19 +109,23 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
     command = "tshark -r " + bind_data->file_path + " -T fields  ";
     for (size_t i = 0; i < bind_data->selected_fields.size(); i++) {
 
-        names.push_back(bind_data->selected_fields[i]);
+        names.push_back(Identifier(bind_data->selected_fields[i]));
         return_types.push_back(bind_data->field_types[i]);
         command.append (" -e " + bind_data->selected_fields[i] );
     }
 
-    if (input.named_parameters.count("climit")) {
+    if (input.named_parameters.contains("climit")) {
         auto limit = input.named_parameters["climit"].GetValue<int64_t>();
-        command.append( " -c " + std::to_string (limit) );
+        if (limit > 0) {  // 0 (the default) means "no limit" -- omit the flag entirely
+            command.append( " -c " + std::to_string (limit) );
+        }
     }
 
-    if (input.named_parameters.count("cfilter")) {
+    if (input.named_parameters.contains("cfilter")) {
         auto filter = input.named_parameters["cfilter"].GetValue<string>();
-        command.append( " -Y " +filter );
+        if (!filter.empty()) {  // "" (the default) means "no filter" -- omit the flag entirely
+            command.append( " -Y " +filter );
+        }
     }
     bind_data->pipe = popen(command.c_str(), "r");  // Now open TShark for reading
     if (!bind_data->pipe) {
@@ -261,7 +266,7 @@ static void CheckTsharkFunction(DataChunk &input, ExpressionState &state, Vector
 
 // **Procedure to Initialize the WireDuck Glossary**
 static unique_ptr<FunctionData> InitializeGlossaryBind(ClientContext &context, TableFunctionBindInput &input,
-                                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 
 	// Returning a single string column
 	return_types.push_back(LogicalType::VARCHAR);
@@ -462,9 +467,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto read_pcap_selected = TableFunction("read_pcap",
         {LogicalType::VARCHAR, },  ReadPcapFunction,ReadPcapBind);
-        read_pcap_selected.named_parameters["protocols"] =LogicalType::LIST(LogicalType::VARCHAR);
-        read_pcap_selected.named_parameters["climit"] = LogicalType::BIGINT;
-        read_pcap_selected.named_parameters["cfilter"] = LogicalType::VARCHAR;
+        read_pcap_selected.GetSignature().AddKeywordOnly("protocols", LogicalType::LIST(LogicalType::VARCHAR),
+            Value::LIST(LogicalType::VARCHAR, {}));
+        read_pcap_selected.GetSignature().AddKeywordOnly("climit", LogicalType::BIGINT, Value::BIGINT(0));
+        read_pcap_selected.GetSignature().AddKeywordOnly("cfilter", LogicalType::VARCHAR, Value(""));
 
     loader.RegisterFunction(read_pcap_selected);
     
